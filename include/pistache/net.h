@@ -1,4 +1,4 @@
-/*
+ /*
  * SPDX-FileCopyrightText: 2015 Mathieu Stefani
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -17,9 +17,18 @@
 #include <stdexcept>
 #include <string>
 
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+#include <pistache/winornix.h>
+
+#include PST_NETDB_HDR
+
+// netinet/in.h defines in_port_t, in_addr_t, in_addr, sockaddr_in,
+// sockaddr_in6, IPPROTO_IP, INADDR_ANY, etc.
+#include PST_NETINET_IN_HDR
+
+#include PST_SOCKET_HDR
+#include PST_SYS_UN_HDR
+
+#include PIST_SOCKFNS_HDR
 
 #ifndef _KERNEL_FASTOPEN
 #define _KERNEL_FASTOPEN
@@ -38,7 +47,7 @@ namespace Pistache
     {
     public:
         // Disable copy and assign.
-        AddrInfo(const AddrInfo&) = delete;
+        AddrInfo(const AddrInfo&)            = delete;
         AddrInfo& operator=(const AddrInfo&) = delete;
 
         // Default construction: do nothing.
@@ -48,6 +57,7 @@ namespace Pistache
         {
             if (addrs)
             {
+                PST_SOCK_STARTUP_CHECK;
                 ::freeaddrinfo(addrs);
             }
         }
@@ -57,6 +67,8 @@ namespace Pistache
         int invoke(const char* node, const char* service,
                    const struct addrinfo* hints)
         {
+            PST_SOCK_STARTUP_CHECK;
+
             if (addrs)
             {
                 ::freeaddrinfo(addrs);
@@ -86,7 +98,8 @@ namespace Pistache
 
         static constexpr uint16_t min()
         {
-            return std::numeric_limits<uint16_t>::min();
+            // return std::numeric_limits<uint16_t>::min();
+            return std::numeric_limits<unsigned short>::min();
         }
         static constexpr uint16_t max()
         {
@@ -100,31 +113,31 @@ namespace Pistache
     class IP
     {
     private:
-        int port;
-        int family;
-        union
-        {
-            struct sockaddr_in addr;
-            struct sockaddr_in6 addr6;
-        };
+        struct sockaddr_storage addr_ = {};
 
     public:
         IP();
         IP(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
         IP(uint16_t a, uint16_t b, uint16_t c, uint16_t d, uint16_t e, uint16_t f,
            uint16_t g, uint16_t h);
-        explicit IP(struct sockaddr*);
+        explicit IP(const struct sockaddr*);
         static IP any();
         static IP loopback();
         static IP any(bool ipv6);
         static IP loopback(bool ipv6);
         int getFamily() const;
-        int getPort() const;
+        uint16_t getPort() const;
         std::string toString() const;
-        void toNetwork(in_addr_t*) const;
+        void toNetwork(PST_IN_ADDR_T*) const;
         void toNetwork(struct in6_addr*) const;
         // Returns 'true' if the system has IPV6 support, false if not.
         static bool supported();
+        // Exposes the underlying socket address as a constant struct sockaddr
+        // reference.
+        const struct sockaddr& getSockAddr() const
+        {
+            return reinterpret_cast<const struct sockaddr&>(addr_);
+        }
     };
     using Ipv4 = IP;
     using Ipv6 = IP;
@@ -136,13 +149,15 @@ namespace Pistache
         const std::string& rawHost() const;
         const std::string& rawPort() const;
         bool hasColon() const;
+        bool hasNumericPort() const;
         int family() const;
 
     private:
         std::string host_;
         std::string port_;
-        bool hasColon_ = false;
-        int family_    = 0;
+        bool hasColon_       = false;
+        bool hasNumericPort_ = false;
+        int family_          = 0;
     };
 
     class Address
@@ -150,39 +165,105 @@ namespace Pistache
     public:
         Address();
         Address(std::string host, Port port);
-        explicit Address(std::string addr);
+        Address(std::string host); // retained for backwards compatibility
+
+        /*
+         * Constructors for creating addresses from strings.  They're
+         * typically used to create IP-based addresses, but can also be used
+         * to create unix domain socket addresses.  By default the created
+         * address will be IP-based.  However, if the addr argument meets one
+         * of the criteria below, a unix domain address will result.  Note
+         * that matching such a criterion implies that addr would be invalid
+         * as an IP-based address.
+         *
+         * The criteria are:
+         *  - addr is empty
+         *  - addr[0] == '\0'
+         *  - addr contains a '/' character
+         */
+
         explicit Address(const char* addr);
+
+        enum class Scheme {
+            Unspecified,
+            Http,
+            Https
+        };
+
+        static Address makeWithDefaultPort(std::string addr,
+                                           Port default_port = 0,
+                                           Scheme scheme = Scheme::Unspecified,
+                                           const std::string * page_cptr = nullptr);
+
         Address(IP ip, Port port);
 
         Address(const Address& other) = default;
         Address(Address&& other)      = default;
 
         Address& operator=(const Address& other) = default;
-        Address& operator=(Address&& other) = default;
+        Address& operator=(Address&& other)      = default;
 
+        /*
+         * Supports the AF_INET, AF_INET6, and AF_UNIX address families.
+         */
         static Address fromUnix(struct sockaddr* addr);
-        static Address fromUnix(struct sockaddr_in* addr);
 
         std::string host() const;
         Port port() const;
         int family() const;
 
+        /*
+         * Returns the address length to be used in calls to bind(2).
+         */
+        socklen_t addrLen() const
+        {
+            return addrLen_;
+        }
+
+        /*
+         * Exposes the underlying socket address as a constant struct sockaddr
+         * reference.
+         */
+        const struct sockaddr& getSockAddr() const
+        {
+            return ip_.getSockAddr();
+        }
+
+        Scheme scheme() const { return(scheme_); }
+        const std::string & page() const { return(page_); }
+
         friend std::ostream& operator<<(std::ostream& os, const Address& address);
 
     private:
+        // For init, default_port of zero makes the default port 80, though the
+        // default can be overridden by addr
+        void init(const std::string& addr, Port default_port, Scheme scheme,
+                  const std::string * page_cptr);
+        void init(const std::string& addr, Port default_port);
         void init(const std::string& addr);
+
+        static bool isUnixDomain(const std::string& addr);
         IP ip_;
         Port port_;
+        socklen_t addrLen_;
+        Scheme scheme_;
+        std::string page_;
     };
 
     std::ostream& operator<<(std::ostream& os, const Address& address);
 
     namespace helpers
     {
-        inline Address httpAddr(const std::string_view& view)
+        inline Address httpAddr(const std::string_view& view,
+                                Port default_port,
+                                Address::Scheme scheme,
+                                const std::string * page_cptr)
         {
-            return Address(std::string(view));
+            return Address::makeWithDefaultPort(std::string(view),
+                                                default_port, scheme, page_cptr);
         }
+
+        Address httpAddr(const std::string_view& view);
     } // namespace helpers
 
     class Error : public std::runtime_error
@@ -228,11 +309,14 @@ namespace Pistache
         }
     };
 
-#define DEFINE_INTEGRAL_SIZE(Int)                                     \
-    template <>                                                       \
-    struct Size<Int>                                                  \
-    {                                                                 \
-        size_t operator()(Int val) const { return digitsCount(val); } \
+#define DEFINE_INTEGRAL_SIZE(Int)        \
+    template <>                          \
+    struct Size<Int>                     \
+    {                                    \
+        size_t operator()(Int val) const \
+        {                                \
+            return digitsCount(val);     \
+        }                                \
     }
 
     DEFINE_INTEGRAL_SIZE(uint8_t);

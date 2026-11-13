@@ -59,8 +59,6 @@ namespace Pistache::Rest
 
     std::vector<TypedParam> Request::splat() const { return splats_; }
 
-    std::regex SegmentTreeNode::multiple_slash = std::regex("//+", std::regex_constants::optimize);
-
     SegmentTreeNode::SegmentTreeNode()
         : resource_ref_()
         , fixed_()
@@ -69,7 +67,7 @@ namespace Pistache::Rest
         , splat_(nullptr)
         , route_(nullptr)
     {
-        std::shared_ptr<char> ptr(new char[0], std::default_delete<char[]>());
+        std::shared_ptr<char> ptr(new char[1], std::default_delete<char[]>());
         resource_ref_.swap(ptr);
     }
 
@@ -85,6 +83,9 @@ namespace Pistache::Rest
     SegmentTreeNode::SegmentType
     SegmentTreeNode::getSegmentType(const std::string_view& fragment)
     {
+        if (fragment.empty())
+            return SegmentType::Fixed;
+
         auto optpos = fragment.find('?');
         if (fragment[0] == ':')
         {
@@ -118,8 +119,15 @@ namespace Pistache::Rest
 
     std::string SegmentTreeNode::sanitizeResource(const std::string& path)
     {
-        const auto& dup = std::regex_replace(path, SegmentTreeNode::multiple_slash,
-                                             std::string("/"));
+        std::string dup;
+        dup.reserve(path.size());
+
+        for (const char c : path)
+        {
+            if (c != '/' || dup.empty() || dup.back() != '/')
+                dup.push_back(c);
+        }
+
         if (dup[dup.length() - 1] == '/')
         {
             return dup.substr(1, dup.length() - 2);
@@ -217,6 +225,8 @@ namespace Pistache::Rest
                 collection      = &optional_;
                 break;
             case SegmentType::Splat:
+                if (!splat_)
+                    throw std::runtime_error("Requested route does not exist.");
                 return splat_->removeRoute(lower_path);
             }
 
@@ -230,7 +240,7 @@ namespace Pistache::Rest
             }
             catch (const std::out_of_range&)
             {
-                throw std::runtime_error("Requested does not exist.");
+                throw std::runtime_error("Requested route does not exist.");
             }
         }
         else
@@ -364,11 +374,13 @@ namespace Pistache::Rest
         void RouterHandler::onRequest(const Http::Request& req,
                                       Http::ResponseWriter response)
         {
+            PS_TIMEDBG_START_THIS;
             router->route(req, std::move(response));
         }
 
         void RouterHandler::onDisconnection(const std::shared_ptr<Tcp::Peer>& peer)
         {
+            PS_TIMEDBG_START_THIS;
             router->disconnectPeer(peer);
         }
 
@@ -414,31 +426,37 @@ namespace Pistache::Rest
 
     void Router::get(const std::string& resource, Route::Handler handler)
     {
+        PS_TIMEDBG_START_THIS;
         addRoute(Http::Method::Get, resource, std::move(handler));
     }
 
     void Router::post(const std::string& resource, Route::Handler handler)
     {
+        PS_TIMEDBG_START_THIS;
         addRoute(Http::Method::Post, resource, std::move(handler));
     }
 
     void Router::put(const std::string& resource, Route::Handler handler)
     {
+        PS_TIMEDBG_START_THIS;
         addRoute(Http::Method::Put, resource, std::move(handler));
     }
 
     void Router::patch(const std::string& resource, Route::Handler handler)
     {
+        PS_TIMEDBG_START_THIS;
         addRoute(Http::Method::Patch, resource, std::move(handler));
     }
 
     void Router::del(const std::string& resource, Route::Handler handler)
     {
+        PS_TIMEDBG_START_THIS;
         addRoute(Http::Method::Delete, resource, std::move(handler));
     }
 
     void Router::options(const std::string& resource, Route::Handler handler)
     {
+        PS_TIMEDBG_START_THIS;
         addRoute(Http::Method::Options, resource, std::move(handler));
     }
 
@@ -480,14 +498,16 @@ namespace Pistache::Rest
     void Router::invokeNotFoundHandler(const Http::Request& req,
                                        Http::ResponseWriter resp) const
     {
-        notFoundHandler(Rest::Request(std::move(req), std::vector<TypedParam>(),
+        notFoundHandler(Rest::Request(req, std::vector<TypedParam>(),
                                       std::vector<TypedParam>()),
                         std::move(resp));
     }
 
     Route::Status Router::route(const Http::Request& request,
-                                Http::ResponseWriter response)
+                                Http::ResponseWriter response) const
     {
+        PS_TIMEDBG_START_THIS;
+
         const auto& resource = request.resource();
         if (resource.empty())
             throw std::runtime_error("Invalid zero-length URL.");
@@ -504,10 +524,16 @@ namespace Pistache::Rest
                 return Route::Status::Match;
         }
 
-        auto& r              = routes[req.method()];
+        std::tuple<std::shared_ptr<Route>, std::vector<TypedParam>,
+                   std::vector<TypedParam>>
+            result;
+
         const auto sanitized = SegmentTreeNode::sanitizeResource(resource);
         const std::string_view path { sanitized.data(), sanitized.size() };
-        auto result = r.findRoute(path);
+
+        const auto routesIt = routes.find(req.method());
+        if (routesIt != routes.end())
+            result = routesIt->second.findRoute(path);
 
         auto route = std::get<0>(result);
         if (route != nullptr)
@@ -521,10 +547,10 @@ namespace Pistache::Rest
 
         for (const auto& handler : customHandlers)
         {
-            auto resp     = response.clone();
+            auto cloned_resp     = response.clone();
             auto handler1 = handler(
                 Request(req, std::vector<TypedParam>(), std::vector<TypedParam>()),
-                std::move(resp));
+                std::move(cloned_resp));
             if (handler1 == Route::Result::Ok)
                 return Route::Status::Match;
         }
@@ -570,19 +596,23 @@ namespace Pistache::Rest
     void Router::addRoute(Http::Method method, const std::string& resource,
                           Route::Handler handler)
     {
+        PS_TIMEDBG_START_THIS;
+
         if (resource.empty())
             throw std::runtime_error("Invalid zero-length URL.");
         auto& r              = routes[method];
         const auto sanitized = SegmentTreeNode::sanitizeResource(resource);
         std::shared_ptr<char> ptr(new char[sanitized.length()],
                                   std::default_delete<char[]>());
-        memcpy(ptr.get(), sanitized.data(), sanitized.length());
+        std::memcpy(ptr.get(), sanitized.data(), sanitized.length());
         const std::string_view path { ptr.get(), sanitized.length() };
         r.addRoute(path, handler, ptr);
     }
 
     void Router::disconnectPeer(const std::shared_ptr<Tcp::Peer>& peer)
     {
+        PS_TIMEDBG_START_THIS;
+
         for (const auto& handler : disconnectHandlers)
         {
             handler(peer);

@@ -24,6 +24,22 @@
 namespace Pistache::Http::Header
 {
 
+    /*
+     * This function parses a non-NULL terminated C string and interprets it as
+     * a float. The str must represent a number following the HTTP definition
+     * of Quality Values:
+     *
+     *     qvalue = ( "0" [ "." 0*3DIGIT ] )
+     *            / ( "1" [ "." 0*3("0") ] )
+     *
+     * https://www.rfc-editor.org/rfc/rfc9110.html#name-quality-values
+     *
+     * It returns true in case of a successful conversion, false otherwise.
+     * Upon return, the qvalue parameter will contain the q-value number, while
+     * qvalueLen will contain its number of digits plus the decimal dot.
+     */
+    bool strToQvalue(const char* str, float* qvalue, std::size_t* qvalueLen);
+
     std::string toLowercase(std::string str);
 
     struct LowercaseHash
@@ -139,7 +155,7 @@ namespace Pistache::Http::Header
     {
 
     public:
-        Registry(const Registry&) = delete;
+        Registry(const Registry&)            = delete;
         Registry& operator=(const Registry&) = delete;
         static Registry& instance();
 
@@ -183,9 +199,9 @@ namespace Pistache::Http::Header
 #define CAT(a, b) CAT_I(a, b)
 #define CAT_I(a, b) a##b
 
-#define UNIQUE_NAME(base) CAT(base, __LINE__)
+#define PST_UNIQUE_NAME(base) CAT(base, __LINE__)
 
 #define RegisterHeader(Header) \
-    Registrar<Header> UNIQUE_NAME(CAT(CAT_I(__, Header), __))
+    Registrar<Header> PST_UNIQUE_NAME(CAT(CAT_I(__, Header), __))
 
 } // namespace Pistache::Http::Header

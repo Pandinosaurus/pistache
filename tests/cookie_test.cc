@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 
+#include <pistache/date_wrapper.h>
 #include <pistache/cookie.h>
-#include <date/date.h>
 
 using namespace Pistache;
 using namespace Pistache::Http;
@@ -116,7 +116,7 @@ TEST(cookie_test, write_test)
     Cookie c2("lang", "en-US");
     using namespace std::chrono;
 
-    FullDate::time_point expires = date::sys_days(date::year { 118 } / 2 / 16) + hours(17);
+    FullDate::time_point expires = date::sys_days(date::year { 2018 } / 2 / 16) + hours(17);
 
     c2.path    = std::string("/");
     c2.expires = FullDate(expires);

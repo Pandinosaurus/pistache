@@ -10,7 +10,7 @@
 #include <pistache/endpoint.h>
 #include <pistache/http.h>
 
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <fstream>
@@ -30,6 +30,8 @@ struct HelloHandlerWithDelay : public Http::Handler
     void onRequest(const Http::Request& /*request*/,
                    Http::ResponseWriter writer) override
     {
+        PS_TIMEDBG_START_THIS;
+
         std::this_thread::sleep_for(std::chrono::seconds(delay_));
         writer.send(Http::Code::Ok, "Hello, World!");
     }
@@ -40,7 +42,7 @@ struct HelloHandlerWithDelay : public Http::Handler
 int clientLogicFunc(int response_size, const std::string& server_page,
                     int wait_seconds)
 {
-    Http::Client client;
+    Http::Experimental::Client client;
     client.init();
 
     std::vector<Async::Promise<Http::Response>> responses;

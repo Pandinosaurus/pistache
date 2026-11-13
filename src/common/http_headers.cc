@@ -19,7 +19,6 @@
 
 namespace Pistache::Http::Header
 {
-
     RegisterHeader(Accept);
     RegisterHeader(AccessControlAllowOrigin);
     RegisterHeader(AccessControlAllowHeaders);
@@ -28,6 +27,7 @@ namespace Pistache::Http::Header
     RegisterHeader(Allow);
     RegisterHeader(CacheControl);
     RegisterHeader(Connection);
+    RegisterHeader(AcceptEncoding);
     RegisterHeader(ContentEncoding);
     RegisterHeader(TransferEncoding);
     RegisterHeader(ContentLength);
@@ -36,13 +36,106 @@ namespace Pistache::Http::Header
     RegisterHeader(Date);
     RegisterHeader(Expect);
     RegisterHeader(Host);
+    RegisterHeader(LastModified);
     RegisterHeader(Location);
     RegisterHeader(Server);
     RegisterHeader(UserAgent);
 
+    bool strToQvalue(const char* str, float* qvalue, std::size_t* qvalueLen)
+    {
+        constexpr char offset = '0';
+
+        *qvalueLen = 0;
+
+        // It is useless to read more than 6 chars, as the maximum allowed
+        // number of digits after the dot is 3, so n.nnn is 5.
+        // The 6th character is read to check if the user specified a qvalue
+        // with too many digits.
+        for (; *qvalueLen < 6; (*qvalueLen)++)
+        {
+            // the decimal dot is only allowed at index 1;
+            // 0.15  ok
+            // 1.10  ok
+            // 1.0.1 no
+            // .40   no
+            if (str[*qvalueLen] == '.' && *qvalueLen != 1)
+            {
+                return false;
+            }
+
+            // The only valid characters are digits and the decimal dot,
+            // anything else signals the end of the string
+            if (str[*qvalueLen] != '.' && !std::isdigit(str[*qvalueLen]))
+            {
+                break;
+            }
+        }
+
+        // Guards against numbers like:
+        // empty
+        // 1.
+        // 0.1234
+        if (*qvalueLen < 1 || *qvalueLen == 2 || *qvalueLen > 5)
+        {
+            return false;
+        }
+
+        // The first char can only be 0 or 1
+        if (str[0] != '0' && str[0] != '1')
+        {
+            return false;
+        }
+
+        int qint = 0;
+
+        switch (*qvalueLen)
+        {
+        case 5:
+            qint += (str[4] - offset);
+            [[fallthrough]];
+        case 4:
+            qint += (str[3] - offset) * 10;
+            [[fallthrough]];
+        case 3:
+            qint += (str[2] - offset) * 100;
+            [[fallthrough]];
+        case 1:
+            qint += (str[0] - offset) * 1000;
+        }
+
+        *qvalue = static_cast<short>(qint) / 1000.0F;
+
+        if (*qvalue > 1)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     std::string toLowercase(std::string str)
     {
-        std::transform(str.begin(), str.end(), str.begin(), ::tolower);
+        std::transform(str.begin(), str.end(), str.begin(),
+                       [](const char ch)
+                       {
+                           const unsigned char uch =
+                               static_cast<unsigned char>(ch);
+                           auto ires = ::tolower(uch);
+                           return(static_cast<char>(ires));
+                       });
+        // Note re: the lambda function being used for std::transform
+        // above. Previously (before 10/2024), std::transform was simply being
+        // passed ::tolower/::toupper for the transformer function, but in fact
+        // we need to make two changes to that: i) we need to cast the input
+        // parm to "unsigned char" to avoid errors due to sign extension as
+        // explained on the Linux man page
+        // (e.g. https://www.man7.org/linux/man-pages/man3/toupper.3.html,
+        // Notes section); and ii) since the result of the transformer function
+        // is written into std::string, i.e. to a char, the transformer
+        // function needs to return a char, not (as ::tolower/::toupper does)
+        // an int, otherwise the compiler may complain about loss of integer
+        // size in writing the int to a char (and in fact MSVC was complaining
+        // in exactly this way).
         return str;
     }
 

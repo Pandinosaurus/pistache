@@ -2,19 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-prefix = get_option('prefix')
+configure_file(input: 'version.h.in', output: 'version.h', configuration: version_conf, install: get_option('PISTACHE_INSTALL'), install_dir: get_option('includedir')/'pistache')
 
-configure_file(input: 'version.h.in', output: 'version.h', configuration: version_data_conf, install: get_option('PISTACHE_INSTALL'), install_dir: prefix/get_option('includedir')/'pistache')
-
-install_headers([
+install_headers(
 	'async.h',
 	'base64.h',
 	'client.h',
 	'common.h',
 	'config.h',
 	'cookie.h',
+	'date_wrapper.h',
 	'description.h',
+	'em_socket_t.h',
+	'emosandlibevdefs.h',
 	'endpoint.h',
+	'eventmeth.h',
 	'errors.h',
 	'flags.h',
 	'http_defs.h',
@@ -30,7 +32,22 @@ install_headers([
 	'net.h',
 	'os.h',
 	'peer.h',
+	'pist_check.h',
+	'pist_clock_gettime.h',
+	'pist_fcntl.h',
+	'pist_filefns.h',
+	'pist_ifaddrs.h',
+	'pist_quote.h',
+	'pist_resource.h',
+	'pist_sockfns.h',
+	'pist_strerror_r.h',
+	'pist_syslog.h',
+	'pist_timelog.h',
 	'prototype.h',
+	'ps_basename.h',
+	'ps_sendfile.h',
+	'ps_strl.h',
+	'pst_errno.h',
 	'reactor.h',
 	'route_bind.h',
 	'router.h',
@@ -43,7 +60,10 @@ install_headers([
 	'type_checkers.h',
 	'typeid.h',
 	'utils.h',
-	'view.h'
-], subdir: 'pistache')
+	'view.h',
+	'winornix.h',
+	subdir: 'pistache')
 
-install_subdir('thirdparty', install_dir: prefix/get_option('includedir')/'pistache')
+if get_option('PISTACHE_USE_RAPIDJSON')
+    install_subdir('serializer', install_dir: get_option('includedir')/'pistache')
+endif

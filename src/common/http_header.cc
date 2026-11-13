@@ -10,6 +10,8 @@
    Implementation of common HTTP headers described by the RFC
 */
 
+#include <pistache/winornix.h>
+
 #include <pistache/base64.h>
 #include <pistache/common.h>
 #include <pistache/config.h>
@@ -17,11 +19,17 @@
 #include <pistache/http_header.h>
 #include <pistache/stream.h>
 
+#include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <iostream>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+
+#include PST_SOCKET_HDR
 
 namespace Pistache::Http::Header
 {
@@ -46,6 +54,10 @@ namespace Pistache::Http::Header
         {
         case Encoding::Gzip:
             return "gzip";
+        case Encoding::Br:
+            return "br";
+        case Encoding::Zstd:
+            return "zstd";
         case Encoding::Compress:
             return "compress";
         case Encoding::Deflate:
@@ -58,6 +70,71 @@ namespace Pistache::Http::Header
             return "unknown";
         }
         return "unknown";
+    }
+
+    Encoding encodingFromString(const std::string_view str)
+    {
+        if (str.empty())
+        {
+            return Encoding::Unknown;
+        }
+
+        if (!PST_STRNCASECMP(str.data(), "zstd", str.length()))
+        {
+            return Encoding::Zstd;
+        }
+        else if (!PST_STRNCASECMP(str.data(), "gzip", str.length()))
+        {
+            return Encoding::Gzip;
+        }
+        else if (!PST_STRNCASECMP(str.data(), "br", str.length()))
+        {
+            return Encoding::Br;
+        }
+        else if (!PST_STRNCASECMP(str.data(), "deflate", str.length()))
+        {
+            return Encoding::Deflate;
+        }
+        else if (!PST_STRNCASECMP(str.data(), "compress", str.length()))
+        {
+            return Encoding::Compress;
+        }
+        else if (!PST_STRNCASECMP(str.data(), "identity", str.length()))
+        {
+            return Encoding::Identity;
+        }
+        else if (!PST_STRNCASECMP(str.data(), "chunked", str.length()))
+        {
+            return Encoding::Chunked;
+        }
+        else
+        {
+            return Encoding::Unknown;
+        }
+    }
+
+    bool encodingSupported(const Encoding encoding)
+    {
+        switch (encoding)
+        {
+
+#ifdef PISTACHE_USE_CONTENT_ENCODING_ZSTD
+        case Encoding::Zstd:
+            /* @fallthrough@ */
+#endif
+#ifdef PISTACHE_USE_CONTENT_ENCODING_BROTLI
+        case Encoding::Br:
+            /* @fallthrough@ */
+#endif
+#ifdef PISTACHE_USE_CONTENT_ENCODING_DEFLATE
+        case Encoding::Deflate:
+            /* @fallthrough@ */
+#endif
+        case Encoding::Identity:
+            return true;
+        default:
+            return false;
+        }
     }
 
     void Allow::write(std::ostream& os) const
@@ -159,13 +236,20 @@ namespace Pistache::Http::Header
                                 "Invalid caching directive, missing delta-seconds");
                         }
 
-                        char* end;
                         const char* beg = cursor.offset();
-                        // @Security: if str is not \0 terminated, there might be a situation
-                        // where strtol can overflow. Double-check that it's harmless and fix
-                        // if not
-                        auto secs = strtol(beg, &end, 10);
-                        cursor.advance(end - beg);
+                        const char* end = cursor.offset() + cursor.remaining();
+
+                        std::uint64_t secs     = 0;
+                        const auto parseResult = std::from_chars(beg, end, secs);
+
+                        if (parseResult.ec != std::errc {})
+                        {
+                            throw std::runtime_error(
+                                "Invalid caching directive, malformated delta-seconds");
+                        }
+
+                        cursor.advance(parseResult.ptr - beg);
+
                         if (!cursor.eof() && cursor.current() != ',')
                         {
                             throw std::runtime_error(
@@ -226,7 +310,7 @@ namespace Pistache::Http::Header
             case CacheDirective::Ext:
                 return "";
             default:
-                return "";
+                break;
             }
             return "";
         };
@@ -473,6 +557,69 @@ namespace Pistache::Http::Header
 
     void Date::write(std::ostream& os) const { fullDate_.write(os); }
 
+    void ETag::parse(const std::string& str)
+    {
+        auto parseOpaqueTag = [](const std::string_view opaqueTag) -> auto {
+            // opaqueTag goes in quotes
+            if (opaqueTag.size() < 2 || opaqueTag.front() != '"' || opaqueTag.back() != '"')
+            {
+                throw std::runtime_error("Invalid ETag format");
+            }
+            //  return value without quotes
+            return opaqueTag.substr(1, opaqueTag.size() - 2);
+        };
+
+        std::string_view etagcValue;
+        bool isWeakValue { false };
+
+        if (str.size() >= weakValidatorMark_.size()
+            && str.compare(0, weakValidatorMark_.size(), weakValidatorMark_) == 0)
+        {
+            std::string_view opaqueTag = std::string_view(str).substr(weakValidatorMark_.size());
+            etagcValue                 = parseOpaqueTag(opaqueTag);
+            isWeakValue                = true;
+        }
+        else
+        {
+            etagcValue = parseOpaqueTag(str);
+        }
+
+        // this will throw exception if etagcString is not a valid etagc
+        validateEtagcWithException(etagcValue);
+
+        etagc_  = etagcValue;
+        isWeak_ = isWeakValue;
+    }
+
+    void ETag::write(std::ostream& os) const
+    {
+        if (isWeak_)
+        {
+            os << weakValidatorMark_;
+        }
+        os << "\"" << etagc_ << "\"";
+    }
+
+    bool ETag::isValidEtagc(std::string_view etagc)
+    {
+        return std::all_of(
+            etagc.begin(),
+            etagc.end(),
+            [](unsigned char ch) {
+                return (ch == 0x21
+                        || (ch >= 0x23 && ch <= 0x7E)
+                        || (ch >= 0x80));
+            });
+    }
+
+    void ETag::validateEtagcWithException(std::string_view etagc)
+    {
+        if (!isValidEtagc(etagc))
+        {
+            throw std::runtime_error("Invalid ETag format: etagc must contain chars in a range of 0x21 / 0x23-0x7E / 0x80-0xFF");
+        }
+    }
+
     void Expect::parseRaw(const char* str, size_t /*len*/)
     {
         if (std::strcmp(str, "100-continue") == 0)
@@ -493,17 +640,31 @@ namespace Pistache::Http::Header
         }
     }
 
+    Host::Host(const std::string& host, Port port)
+        : Host(host + ':' + std::to_string(port))
+    { }
+
     Host::Host(const std::string& data)
-        : host_()
-        , port_(0)
     {
         parse(data);
     }
 
     void Host::parse(const std::string& data)
     {
-        AddressParser parser(data);
-        host_                   = parser.rawHost();
+        const AddressParser parser(data);
+
+        /* AddressParser returns an IPv6 host address, but RFC 9112 requires
+         * that the value of the "Host" header is an URI host, as defined in
+         * RFC 3986 section 3.2.2 */
+        if (parser.family() == AF_INET6)
+        {
+            uriHost_ = '[' + parser.rawHost() + ']';
+        }
+        else
+        {
+            uriHost_ = parser.rawHost();
+        }
+
         const std::string& port = parser.rawPort();
         if (port.empty())
         {
@@ -517,7 +678,7 @@ namespace Pistache::Http::Header
 
     void Host::write(std::ostream& os) const
     {
-        os << host_;
+        os << uriHost_;
         /* @Clarity @Robustness: maybe a found a literal different than zero
      to represent a null port ?
   */
@@ -525,6 +686,16 @@ namespace Pistache::Http::Header
         {
             os << ":" << port_;
         }
+    }
+
+    void LastModified::parse(const std::string& data)
+    {
+        fullDate_ = FullDate::fromString(data);
+    }
+
+    void LastModified::write(std::ostream& os) const
+    {
+        fullDate_.write(os, FullDate::Type::RFC1123GMT);
     }
 
     Location::Location(const std::string& location)
@@ -574,7 +745,18 @@ namespace Pistache::Http::Header
         } while (!cursor.eof());
     }
 
-    void Accept::write(std::ostream& /*os*/) const { }
+    void Accept::write(std::ostream& os) const
+    {
+        if (mediaRange_.empty())
+        {
+            return;
+        }
+        for (size_t i = 0; i < mediaRange_.size() - 1; i++)
+        {
+            os << mediaRange_[i].toString() << ", ";
+        }
+        os << mediaRange_[mediaRange_.size() - 1].toString();
+    }
 
     void AccessControlAllowOrigin::parse(const std::string& data) { uri_ = data; }
 
@@ -594,30 +776,115 @@ namespace Pistache::Http::Header
 
     void EncodingHeader::parseRaw(const char* str, size_t len)
     {
-        if (!strncasecmp(str, "gzip", len))
+        encoding_ = encodingFromString(std::string_view(str, len));
+    }
+
+    AcceptEncoding::AcceptEncoding(Encoding encoding)
+    {
+        insertEncoding(std::make_pair(encoding, 1.0F));
+    }
+
+    /*
+     * Tokens are short textual identifiers that do not include whitespace or delimiters.
+     *
+     * tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*"
+     *       / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"
+     *       / DIGIT / ALPHA
+     */
+    static bool is_http_token(const unsigned char c)
+    {
+        return c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\''
+            || c == '*' || c == '+' || c == '-' || c == '.' || c == '^' || c == '_'
+            || c == '`' || c == '|' || c == '~' || std::isalnum(c);
+    }
+
+    static bool is_http_space(const unsigned char c)
+    {
+        return std::isblank(c);
+    }
+
+    void AcceptEncoding::parseRaw(const char* const str, const size_t len)
+    {
+        const char* const str_end = str + len;
+        const char* start         = str;
+
+        while (start != str_end)
         {
-            encoding_ = Encoding::Gzip;
+            // Per RFC 9110, if no "q" parameter is present, the default weight is 1
+            float qvalue = 1;
+
+            const char* const end = std::find(start, str_end, ',');
+
+            const char* const token_end = std::find_if_not(start, end, is_http_token);
+
+            // If no semicolon is found, it means that no q-value is present
+            const char* const semicolon = std::find(token_end, end, ';');
+            if (semicolon != end)
+            {
+                // Skip optional white space
+                const char* ows_end = std::find_if_not(semicolon + std::strlen(";"), end, is_http_space);
+
+                if (ows_end[0] != 'q' || ows_end[1] != '=')
+                {
+                    // "q=" is expected after the optional white space. If there
+                    // isn't, this is a malformed header
+                    encodings_.clear();
+                    return;
+                }
+
+                const char* const value_str = ows_end + std::strlen("q=");
+
+                std::size_t qvalue_len;
+                const bool valid = strToQvalue(value_str, &qvalue, &qvalue_len);
+                if (!valid)
+                {
+                    encodings_.clear();
+                    return;
+                }
+            }
+
+            const std::string_view encodingStr(start, token_end - start);
+            if (!encodingStr.empty())
+            {
+                insertEncoding(std::make_pair(
+                    encodingFromString(std::string_view(start, token_end - start)),
+                    qvalue));
+            }
+
+            // Go to the next token for the next iteration
+            start = std::find_if(end, str_end, is_http_token);
         }
-        else if (!strncasecmp(str, "deflate", len))
+    }
+
+    void AcceptEncoding::write(std::ostream& os) const
+    {
+        if (encodings_.empty())
         {
-            encoding_ = Encoding::Deflate;
+            return;
         }
-        else if (!strncasecmp(str, "compress", len))
+
+        for (size_t i = 0; i < encodings_.size() - 1; i++)
         {
-            encoding_ = Encoding::Compress;
+            os << encodingString(encodings_[i].first) << ";q=" << encodings_[i].second << ", ";
         }
-        else if (!strncasecmp(str, "identity", len))
-        {
-            encoding_ = Encoding::Identity;
-        }
-        else if (!strncasecmp(str, "chunked", len))
-        {
-            encoding_ = Encoding::Chunked;
-        }
-        else
-        {
-            encoding_ = Encoding::Unknown;
-        }
+        os << encodingString(encodings_[encodings_.size() - 1].first) << ";q=" << encodings_[encodings_.size() - 1].second;
+    }
+
+    const std::vector<std::pair<Encoding, float>>& AcceptEncoding::encodings() const
+    {
+        return encodings_;
+    }
+
+    void AcceptEncoding::insertEncoding(const std::pair<Encoding, float>& elem)
+    {
+        encodings_.insert(
+            std::upper_bound(
+                encodings_.cbegin(), encodings_.cend(),
+                elem,
+                [](decltype(elem) a, decltype(elem) b) {
+                    return a.second > b.second;
+                }),
+            elem);
     }
 
     void EncodingHeader::write(std::ostream& os) const

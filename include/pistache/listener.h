@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include <pistache/winornix.h>
+
 #include <pistache/async.h>
 #include <pistache/config.h>
 #include <pistache/flags.h>
@@ -22,7 +24,7 @@
 #include <pistache/ssl_wrappers.h>
 #include <pistache/tcp.h>
 
-#include <sys/resource.h>
+#include PST_SYS_RESOURCE_HDR
 
 #include <memory>
 #include <thread>
@@ -49,7 +51,7 @@ namespace Pistache::Tcp
             double global;
             std::vector<double> workers;
 
-            std::vector<rusage> raw;
+            std::vector<PST_RUSAGE> raw;
             TimePoint tick;
         };
 
@@ -87,14 +89,16 @@ namespace Pistache::Tcp
         void pinWorker(size_t worker, const CpuSet& set);
 
         void setupSSL(const std::string& cert_path, const std::string& key_path,
-                      bool use_compression);
+                      bool use_compression, int (*cb_password)(char*, int, int, void*),
+                      std::chrono::milliseconds sslHandshakeTimeout = Const::DefaultSSLHandshakeTimeout);
         void setupSSLAuth(const std::string& ca_file, const std::string& ca_path,
                           int (*cb)(int, void*));
+        std::vector<std::shared_ptr<Tcp::Peer>> getAllPeer();
 
     private:
         Address addr_;
-        int listen_fd = -1;
-        int backlog_  = Const::MaxBacklog;
+        Fd listen_fd = PS_FD_EMPTY;
+        int backlog_ = Const::MaxBacklog;
         NotifyFd shutdownFd;
         Polling::Epoll poller;
 
@@ -105,21 +109,29 @@ namespace Pistache::Tcp
         std::string workersName_;
         std::shared_ptr<Handler> handler_;
 
-        Aio::Reactor reactor_;
+        std::shared_ptr<Aio::Reactor> reactor_;
         Aio::Reactor::Key transportKey;
 
         TransportFactory transportFactory_;
 
         TransportFactory defaultTransportFactory() const;
 
+        bool bindListener(const struct addrinfo* addr);
+
         void handleNewConnection();
-        int acceptConnection(struct sockaddr_storage& peer_addr) const;
+        em_socket_t acceptConnection(struct sockaddr_storage& peer_addr) const;
         void dispatchPeer(const std::shared_ptr<Peer>& peer);
 
+#ifdef _IS_WINDOWS
+        std::atomic<em_socket_t> idxCtr_ = 1;
+#endif
         bool useSSL_            = false;
         ssl::SSLCtxPtr ssl_ctx_ = nullptr;
 
         PISTACHE_STRING_LOGGER_T logger_ = PISTACHE_NULL_STRING_LOGGER;
+
+        // This should be moved after "ssl_ctx_" in the next ABI change
+        std::chrono::milliseconds sslHandshakeTimeout_ = Const::DefaultSSLHandshakeTimeout;
     };
 
 } // namespace Pistache::Tcp

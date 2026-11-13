@@ -8,7 +8,7 @@
 #include <pistache/endpoint.h>
 #include <pistache/http.h>
 
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
@@ -22,6 +22,8 @@ struct HelloHandler : public Http::Handler
     void onRequest(const Http::Request& /*request*/,
                    Http::ResponseWriter writer) override
     {
+        PS_TIMEDBG_START_THIS;
+
         writer.send(Http::Code::Ok, "Hello, World!");
     }
 };
@@ -33,6 +35,8 @@ struct DelayHandler : public Http::Handler
     void onRequest(const Http::Request& /*request*/,
                    Http::ResponseWriter writer) override
     {
+        PS_TIMEDBG_START_THIS;
+
         std::this_thread::sleep_for(std::chrono::seconds(4));
         writer.send(Http::Code::Ok, "Hello, World!");
     }
@@ -45,6 +49,8 @@ struct FastEvenPagesHandler : public Http::Handler
     void onRequest(const Http::Request& request,
                    Http::ResponseWriter writer) override
     {
+        PS_TIMEDBG_START_THIS;
+
         std::string page = request.resource();
         page.erase(0, 1);
         int num = std::stoi(page);
@@ -67,6 +73,8 @@ struct QueryBounceHandler : public Http::Handler
     void onRequest(const Http::Request& request,
                    Http::ResponseWriter writer) override
     {
+        PS_TIMEDBG_START_THIS;
+
         writer.send(Http::Code::Ok, request.query().as_str());
     }
 };
@@ -83,12 +91,16 @@ struct LargeContentHandler : public Http::Handler
     void onRequest(const Http::Request& /*request*/,
                    Http::ResponseWriter writer) override
     {
+        PS_TIMEDBG_START_THIS;
+
         writer.send(Http::Code::Ok, largeContent);
     }
 };
 
 TEST(http_client_test, one_client_with_one_request)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -101,7 +113,7 @@ TEST(http_client_test, one_client_with_one_request)
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
+    Http::Experimental::Client client;
     client.init();
 
     auto rb       = client.get(server_address);
@@ -126,6 +138,8 @@ TEST(http_client_test, one_client_with_one_request)
 
 TEST(http_client_test, one_client_with_multiple_requests)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -138,7 +152,7 @@ TEST(http_client_test, one_client_with_multiple_requests)
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
+    Http::Experimental::Client client;
     client.init();
 
     std::vector<Async::Promise<Http::Response>> responses;
@@ -166,11 +180,13 @@ TEST(http_client_test, one_client_with_multiple_requests)
     server.shutdown();
     client.shutdown();
 
-    ASSERT_TRUE(response_counter == RESPONSE_SIZE);
+    ASSERT_EQ(response_counter, RESPONSE_SIZE);
 }
 
 TEST(http_client_test, multiple_clients_with_one_request)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -184,11 +200,11 @@ TEST(http_client_test, multiple_clients_with_one_request)
     std::cout << "Server address: " << server_address << "\n";
 
     const int CLIENT_SIZE = 3;
-    Http::Client client1;
+    Http::Experimental::Client client1;
     client1.init();
-    Http::Client client2;
+    Http::Experimental::Client client2;
     client2.init();
-    Http::Client client3;
+    Http::Experimental::Client client3;
     client3.init();
 
     std::vector<Async::Promise<Http::Response>> responses;
@@ -232,11 +248,13 @@ TEST(http_client_test, multiple_clients_with_one_request)
     client2.shutdown();
     client3.shutdown();
 
-    ASSERT_TRUE(response_counter == CLIENT_SIZE);
+    ASSERT_EQ(response_counter, CLIENT_SIZE);
 }
 
 TEST(http_client_test, timeout_reject)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -249,7 +267,7 @@ TEST(http_client_test, timeout_reject)
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
+    Http::Experimental::Client client;
     client.init();
 
     auto rb       = client.get(server_address).timeout(std::chrono::milliseconds(1000));
@@ -272,6 +290,8 @@ TEST(
     http_client_test,
     one_client_with_multiple_requests_and_one_connection_per_host_and_two_threads)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -284,8 +304,8 @@ TEST(
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
-    auto opts = Http::Client::options().maxConnectionsPerHost(1).threads(2);
+    Http::Experimental::Client client;
+    auto opts = Http::Experimental::Client::options().maxConnectionsPerHost(1).threads(2);
     client.init(opts);
 
     std::vector<Async::Promise<Http::Response>> responses;
@@ -299,8 +319,13 @@ TEST(
                             .send();
         response.then(
             [&](Http::Response rsp) {
+                PS_LOG_DEBUG("Http::Response");
+
                 if (rsp.code() == Http::Code::Ok)
                     ++response_counter;
+                else
+                    PS_LOG_DEBUG_ARGS("Http::Response error code %d",
+                                      rsp.code());
             },
             Async::IgnoreException);
         responses.push_back(std::move(response));
@@ -314,13 +339,15 @@ TEST(
     server.shutdown();
     client.shutdown();
 
-    ASSERT_TRUE(response_counter == RESPONSE_SIZE);
+    ASSERT_EQ(response_counter, RESPONSE_SIZE);
 }
 
 TEST(
     http_client_test,
     one_client_with_multiple_requests_and_two_connections_per_host_and_one_thread)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -333,8 +360,8 @@ TEST(
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
-    auto opts = Http::Client::options().maxConnectionsPerHost(2).threads(1);
+    Http::Experimental::Client client;
+    auto opts = Http::Experimental::Client::options().maxConnectionsPerHost(2).threads(1);
     client.init(opts);
 
     std::vector<Async::Promise<Http::Response>> responses;
@@ -350,6 +377,10 @@ TEST(
             [&](Http::Response rsp) {
                 if (rsp.code() == Http::Code::Ok)
                     ++response_counter;
+#ifdef DEBUG
+                else
+                    PS_LOG_WARNING_ARGS("Http failure code %d", rsp.code());
+#endif
             },
             Async::IgnoreException);
         responses.push_back(std::move(response));
@@ -363,11 +394,13 @@ TEST(
     server.shutdown();
     client.shutdown();
 
-    ASSERT_TRUE(response_counter == RESPONSE_SIZE);
+    ASSERT_EQ(response_counter, RESPONSE_SIZE);
 }
 
 TEST(http_client_test, test_client_timeout)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -380,7 +413,7 @@ TEST(http_client_test, test_client_timeout)
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
+    Http::Experimental::Client client;
     client.init();
 
     std::vector<Async::Promise<Http::Response>> responses;
@@ -398,10 +431,26 @@ TEST(http_client_test, test_client_timeout)
             [&res, num = i](Http::Response rsp) {
                 if (rsp.code() == Http::Code::Ok)
                 {
+                    PS_LOG_DEBUG_ARGS("Http::Response num %d", num);
                     res[num] = rsp.body();
                 }
+#ifdef DEBUG
+                else
+                {
+                     PS_LOG_DEBUG_ARGS("Http::Response num %d resp code %d",
+                                       num, rsp.code());
+                }
+#endif
             },
-            [&rejects_counter](std::exception_ptr) { ++rejects_counter; });
+            [&rejects_counter
+#ifdef DEBUG
+             , num = i
+#endif
+                ](std::exception_ptr)
+                {
+                     PS_LOG_DEBUG_ARGS("Http::Response reject num %d", num);
+                    ++rejects_counter;
+                });
         responses.push_back(std::move(response));
     }
 
@@ -429,6 +478,8 @@ TEST(http_client_test, test_client_timeout)
 
 TEST(http_client_test, client_sends_query)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -441,7 +492,7 @@ TEST(http_client_test, client_sends_query)
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
+    Http::Experimental::Client client;
     client.init();
 
     std::string queryStr;
@@ -501,6 +552,8 @@ TEST(http_client_test, client_sends_query)
 
 TEST(http_client_test, client_get_large_content)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -513,8 +566,8 @@ TEST(http_client_test, client_get_large_content)
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
-    auto opts = Http::Client::options().maxResponseSize(8192);
+    Http::Experimental::Client client;
+    auto opts = Http::Experimental::Client::options().maxResponseSize(8192);
     client.init(opts);
 
     auto response = client.get(server_address).send();
@@ -542,6 +595,8 @@ TEST(http_client_test, client_get_large_content)
 
 TEST(http_client_test, client_do_not_get_large_content)
 {
+    PS_TIMEDBG_START;
+
     const Pistache::Address address("localhost", Pistache::Port(0));
 
     Http::Endpoint server(address);
@@ -554,8 +609,8 @@ TEST(http_client_test, client_do_not_get_large_content)
     const std::string server_address = "localhost:" + server.getPort().toString();
     std::cout << "Server address: " << server_address << "\n";
 
-    Http::Client client;
-    auto opts = Http::Client::options().maxResponseSize(4096);
+    Http::Experimental::Client client;
+    auto opts = Http::Experimental::Client::options().maxResponseSize(4096);
     client.init(opts);
 
     auto response       = client.get(server_address).send();

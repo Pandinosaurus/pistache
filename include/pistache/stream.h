@@ -36,6 +36,23 @@ namespace Pistache
         typedef std::basic_streambuf<CharT> Base;
         typedef typename Base::traits_type traits_type;
 
+#ifdef __MINGW32__
+        // As of Oct/2024, if we do not explicitly set the locale, as below,
+        // the test http_parsing_test.parser_reset generates an exception in
+        // the locale destructor when the Http::RequestParser (which inherits
+        // from StreamBuf) that the test uses goes out of scope. The locale
+        // instance that crashes on destruction is a component of
+        // std::basic_streambuf, inheried by StreamBuf and thence by
+        // Http::RequestParser. This may be a bug in the mingw standard
+        // library; setting the std::basic_streambuf's locale explicitly works
+        // around the issue.
+        StreamBuf()
+            {
+                std::locale dummy_loc("C");
+                Base::pubimbue(dummy_loc);
+            }
+#endif
+
         void setArea(char* begin, char* current, char* end)
         {
             this->setg(begin, current, end);
@@ -86,7 +103,7 @@ namespace Pistache
         explicit ArrayStreamBuf(size_t maxSize)
             : StreamBuf<CharT>()
             , bytes()
-            , maxSize(maxSize)
+            , maxSize_(maxSize)
         {
             bytes.clear();
             Base::setg(bytes.data(), bytes.data(), bytes.data() + bytes.size());
@@ -102,7 +119,7 @@ namespace Pistache
 
         bool feed(const char* data, size_t len)
         {
-            if (bytes.size() + len > maxSize)
+            if (bytes.size() + len > maxSize_)
             {
                 return false;
             }
@@ -123,7 +140,7 @@ namespace Pistache
 
     private:
         std::vector<CharT> bytes;
-        size_t maxSize = Const::MaxBuffer;
+        size_t maxSize_ = Const::MaxBuffer;
     };
 
     struct RawBuffer final
@@ -132,10 +149,10 @@ namespace Pistache
         RawBuffer(std::string data, size_t length);
         RawBuffer(const char* data, size_t length);
 
-        RawBuffer(const RawBuffer&) = default;
+        RawBuffer(const RawBuffer&)            = default;
         RawBuffer& operator=(const RawBuffer&) = default;
         RawBuffer(RawBuffer&&)                 = default;
-        RawBuffer& operator=(RawBuffer&&) = default;
+        RawBuffer& operator=(RawBuffer&&)      = default;
 
         ~RawBuffer() = default;
 
@@ -152,12 +169,12 @@ namespace Pistache
     {
         explicit FileBuffer(const std::string& fileName);
 
-        Fd fd() const;
+        int fd() const;
         size_t size() const;
 
     private:
         std::string fileName_;
-        Fd fd_;
+        int fd_; // regular old file descriptor ("int") even in libevent case
         size_t size_;
     };
 
@@ -170,7 +187,7 @@ namespace Pistache
 
         DynamicStreamBuf(size_t size, size_t maxSize);
 
-        DynamicStreamBuf(const DynamicStreamBuf& other) = delete;
+        DynamicStreamBuf(const DynamicStreamBuf& other)            = delete;
         DynamicStreamBuf& operator=(const DynamicStreamBuf& other) = delete;
 
         DynamicStreamBuf(DynamicStreamBuf&& other);
@@ -241,7 +258,7 @@ namespace Pistache
                 , active(true)
             { }
 
-            Revert(const Revert&) = delete;
+            Revert(const Revert&)            = delete;
             Revert& operator=(const Revert&) = delete;
 
             ~Revert()

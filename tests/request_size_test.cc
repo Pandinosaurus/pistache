@@ -10,7 +10,7 @@
 #include <pistache/endpoint.h>
 #include <pistache/http.h>
 
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <memory>
@@ -49,8 +49,8 @@ void testRequestSizes(const std::string& url,
     RequestSizeTestSets testResults;
     std::mutex resultsetMutex;
 
-    Http::Client client;
-    auto client_opts = Http::Client::options().threads(3).maxConnectionsPerHost(3);
+    Http::Experimental::Client client;
+    auto client_opts = Http::Experimental::Client::options().threads(3).maxConnectionsPerHost(3);
     client.init(client_opts);
 
     std::vector<Async::Promise<Http::Response>> responses;
@@ -141,11 +141,19 @@ TEST(request_size, manual_construction)
         void onRequest(const Http::Request& /*request*/,
                        Http::ResponseWriter response) override
         {
+            PS_TIMEDBG_START_THIS;
+
             response.send(Http::Code::Ok, "All good");
         }
 
     private:
-        [[maybe_unused]] tag placeholder;
+#if !defined(__GNUC__) || defined(__clang__) || defined(__INTEL_COMPILER)
+        // maybe_unused is legit here but gcc warns about it anyway
+        // gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0 April/2024
+        // Note: CLANG and ICC define __GNUC__ even though they're not gcc
+        [[maybe_unused]]
+#endif
+        tag placeholder;
     };
 
     // General test parameters.

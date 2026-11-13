@@ -18,11 +18,13 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #endif
-#include <date/date.h>
+#include <pistache/date_wrapper.h>
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
 #include <pistache/http_defs.h>
+
+#include PST_CLOCK_GETTIME_HDR
 
 namespace Pistache::Http
 {
@@ -35,7 +37,15 @@ namespace Pistache::Http
         {
             std::istringstream in { s };
             in >> date::parse("%a, %d %b %Y %T %Z", tp);
-            return !in.fail();
+            if (in.fail())
+            {
+                // Google seems to use this 1123 variant, like this:
+                // from www.google.com: expires=Mon, 26-May-2025 18:38:48 GMT
+                std::istringstream in2 { s };
+                in2 >> date::parse("%a, %d-%b-%Y %T %Z", tp);
+                return !in2.fail();
+            }
+            return true;
         }
 
         bool parse_RFC_850(const std::string& s, time_point& tp)
@@ -50,6 +60,26 @@ namespace Pistache::Http
             std::istringstream in { s };
             in >> date::parse("%a %b %d %T %Y", tp);
             return !in.fail();
+        }
+
+        bool parse_epoch(const std::string& s, time_point& tp)
+        {
+            for (unsigned int i = 0; i < s.size(); ++i)
+            {
+                if (!std::isdigit(s[i]))
+                    return false;
+            }
+
+            try
+            {
+                tp = time_point(std::chrono::seconds(std::stoull(s)));
+            }
+            catch (std::out_of_range& e)
+            {
+                return false;
+            }
+
+            return true;
         }
 
     } // anonymous namespace
@@ -117,7 +147,10 @@ namespace Pistache::Http
             return FullDate(tp);
         else if (parse_asctime(str, tp))
             return FullDate(tp);
+        else if (parse_epoch(str, tp))
+            return FullDate(tp);
 
+        PS_LOG_DEBUG_ARGS("Failed parsing date: %s", str.c_str());
         throw std::runtime_error("Invalid Date format");
     }
 
@@ -128,6 +161,19 @@ namespace Pistache::Http
         case Type::RFC1123:
             date::to_stream(os, "%a, %d %b %Y %T %Z", date_);
             break;
+        case Type::RFC1123GMT: {
+            // Requires GMT so we must use std::gmtime to convert to GMT.  We
+            // cannot use "%Z" since may refer to the local time zone name,
+            // not the name associated with the std::tm object (since std::tm
+            // isn't guaranteed to have a tm_zone field - it only does on
+            // POSIX.1-2024 systems; this issue seen on NetBSD 10.0).
+            time_t t = std::chrono::system_clock::to_time_t(date_);
+
+            struct tm gmtm;
+            PST_GMTIME_R(&t, &gmtm);
+            os << std::put_time(&gmtm, "%a, %d %b %Y %T GMT");
+        }
+        break;
         case Type::RFC850:
             date::to_stream(os, "%a, %d-%b-%y %T %Z", date_);
             break;
@@ -135,7 +181,7 @@ namespace Pistache::Http
             date::to_stream(os, "%a %b %d %T %Y", date_);
             break;
         default:
-            std::runtime_error("Invalid use of FullDate::write");
+            throw std::runtime_error("Invalid use of FullDate::write");
         }
     }
 
@@ -149,7 +195,7 @@ namespace Pistache::Http
             return "HTTP/1.1";
         }
 
-        unreachable();
+        Pistache::details::unreachable();
     }
 
     const char* methodString(Method method)
@@ -163,7 +209,7 @@ namespace Pistache::Http
 #undef METHOD
         }
 
-        unreachable();
+        Pistache::details::unreachable();
     }
 
     const char* codeString(Code code)
